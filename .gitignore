@@ -1,0 +1,21 @@
+# личные данные — не публиковать
+settings.json
+settings.json.tmp
+diary.csv
+diary.csv.tmp
+lights.json
+alarm.log
+records/
+.testrun
+.upearly
+
+# Python
+__pycache__/
+*.pyc
+
+# системное
+Thumbs.db
+desktop.ini
+
+# сборка релиза — прикладывается к GitHub Release, в репозиторий не кладётся
+dist/

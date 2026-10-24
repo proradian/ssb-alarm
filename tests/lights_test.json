@@ -1,0 +1,7 @@
+{
+  "token": "test-token-not-real",
+  "device_id": "dev-lamp",
+  "device_name": "",
+  "pre_minutes": 5,
+  "dawn": true
+}
