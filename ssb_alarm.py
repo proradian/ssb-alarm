@@ -17,6 +17,7 @@ SSB ALARM — самый сложный будильник (ssb-alarm).
     pythonw ssb_alarm.py --up      — «Я встал»: проснулся раньше — решаешь 10 задач
     pythonw ssb_alarm.py --bedtime — тихое напоминание, что пора спать
     pythonw ssb_alarm.py --record  — записать ночь с микрофона и разобрать утром
+    pythonw ssb_alarm.py --keepalive — до подъёма не давать наушникам уснуть
     pythonw ssb_alarm.py --light   — рассвет через умный дом Яндекса (по желанию)
     python  ssb_alarm.py --check   — проверить колонку
     python  ssb_alarm.py --devices — список устройств вывода звука
@@ -56,7 +57,7 @@ CONF = os.path.join(HERE, "settings.json")
 DEFAULTS = {"hh": 6, "mm": 30, "level": 2, "need": 3,
             "reset": True, "penalty": True, "kinds": "mix",
             "sound": "melody", "escalate": True, "speaker": "",
-            "speaker_volume": 80,
+            "speaker_volume": 80, "keepalive": False, "keepalive_db": -45,
             "bedtime": True, "bed_before_min": 495, "bed_fixed": "",
             "plan": {}}
 
@@ -79,6 +80,7 @@ def load_cfg():
     cfg["level"] = max(1, min(3, cfg["level"]))
     cfg["need"] = max(1, min(12, cfg["need"]))
     cfg["speaker_volume"] = max(10, min(100, cfg["speaker_volume"]))
+    cfg["keepalive_db"] = max(-70, min(-20, cfg["keepalive_db"]))
     return cfg
 
 
@@ -1763,6 +1765,98 @@ class Siren:
             self.proc.terminate()
 
 
+# ─────── наушники: не дать им уснуть до звонка ───────
+# Беспроводные наушники (Razer Barracuda и др.) сами выключаются, если в них
+# какое-то время нет звука: через 2,4 ГГц-донгл — бывает уже через 20 с, даже
+# при «Auto Standby: Never». Выключенные наушники звонок не разбудит. Поэтому
+# всю ночь в них идёт неслышный сигнал: 30 Гц на −45 дБ от полной шкалы — ниже
+# порога слуха на такой частоте, но для наушников это «звук есть».
+
+KEEPALIVE_HZ = 30             # целое число периодов в секунде — стык петли без щелчка
+KEEPALIVE_CHECK_SEC = 20      # как часто заново искать наушники
+KEEPALIVE_AFTER_MIN = 20      # сколько держать после подъёма (звонок и проверка через 10 мин)
+_KEEPALIVE_MUTEX = None
+
+
+def keepalive_wav(db):
+    """Секунда синуса KEEPALIVE_HZ на уровне db (дБ от полной шкалы)."""
+    path = os.path.join(tempfile.gettempdir(), "alarm_keepalive_%02d.wav" % -db)
+    if os.path.exists(path) and os.path.getsize(path) > 1000:
+        return path
+    amp = 32767 * 10 ** (db / 20.0)
+    data = b"".join(struct.pack("<h", int(round(amp * math.sin(
+        2 * math.pi * KEEPALIVE_HZ * i / RATE)))) for i in range(RATE))
+    with wave.open(path, "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)
+        f.setframerate(RATE)
+        f.writeframes(data)
+    return path
+
+
+def keepalive_single():
+    """Один процесс поддержки на систему: напоминание и ручной запуск не дублируют друг друга."""
+    global _KEEPALIVE_MUTEX
+    if sys.platform != "win32":
+        return True
+    import ctypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateMutexW.restype = ctypes.c_void_p
+    _KEEPALIVE_MUTEX = k32.CreateMutexW(None, False, "ssb-alarm-keepalive")
+    return ctypes.get_last_error() != 183          # ERROR_ALREADY_EXISTS
+
+
+def run_keepalive(cfg, until, now=datetime.now, sleep=time.sleep,
+                  find=find_speaker, player=DevicePlayer):
+    """Крутит тихий сигнал в наушники из настройки speaker до момента until.
+    Наушники ищем заново: Bluetooth после сна компа меняет номер устройства,
+    а выключенные наушники пропадают из списка — включишь, и сигнал вернётся."""
+    path = keepalive_wav(cfg["keepalive_db"])
+    p, cur = None, None
+    log("наушники: держу «%s» до %s, сигнал %d дБ" % (
+        cfg["speaker"], until.strftime("%d.%m %H:%M"), cfg["keepalive_db"]))
+    try:
+        while now() < until:
+            found = find(cfg["speaker"])
+            if found and (p is None or found[0] != cur or p.finished()):
+                if p is not None:
+                    p.stop()
+                p, cur = player(found[0]), found[0]
+                if p.play_loop(path):
+                    log("наушники: сигнал идёт в %s" % found[1])
+                else:
+                    log("наушники: %s не открылись" % found[1])
+                    p = None
+            elif not found and p is not None:
+                p.stop()
+                p, cur = None, None
+                log("наушники «%s» пропали — жду, когда появятся" % cfg["speaker"])
+            sleep(KEEPALIVE_CHECK_SEC)
+    finally:
+        if p is not None:
+            p.stop()
+    log("наушники: поддержка закончена")
+
+
+def start_keepalive(cfg):
+    """Запускает --keepalive отдельным процессом, если он включён в настройках.
+    Отрываем процесс от задачи «Будильник-отбой»: у неё предел 2 часа, а держать
+    наушники надо до утра."""
+    if not (cfg.get("keepalive") and cfg.get("speaker")) or sys.platform != "win32":
+        return False
+    exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+    if not os.path.exists(exe):
+        exe = sys.executable
+    for flags in (NO_WINDOW | 0x01000000, NO_WINDOW):    # CREATE_BREAKAWAY_FROM_JOB
+        try:
+            subprocess.Popen([exe, SCRIPT, "--keepalive"], cwd=HERE, creationflags=flags)
+            return True
+        except OSError:
+            continue
+    log("наушники: поддержку запустить не удалось")
+    return False
+
+
 # ═══════════════════════════ ЭКРАН БУДИЛЬНИКА ═══════════════════════════
 
 class AlarmWindow:
@@ -2884,6 +2978,7 @@ class BedtimeWindow:
         self.tick()
         self.sparkle()
         self.root.after(150, self.check_speaker)
+        start_keepalive(self.cfg)
 
     def sparkle(self):
         if not self.alive:
@@ -4939,6 +5034,13 @@ def _main():
         return
     if "--record" in sys.argv:
         RecorderWindow().run()
+        return
+    if "--keepalive" in sys.argv:
+        cfg = load_cfg()
+        if not cfg["speaker"]:
+            log("наушники: в settings.json не задан speaker — держать нечего")
+        elif keepalive_single():
+            run_keepalive(cfg, next_wake(cfg) + timedelta(minutes=KEEPALIVE_AFTER_MIN))
         return
     if "--up" in sys.argv:
         up_early()

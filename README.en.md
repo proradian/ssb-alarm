@@ -30,6 +30,7 @@ A Windows alarm clock built on sleep research. SSB stands for «Самый Сл�
 - **Gradual schedule shifts.** Per-date wake times and a "step earlier −30 min" button; the whole schedule is registered in Windows Task Scheduler.
 - **One-question sleep log.** Wake time is when you solved the problems; afterwards it asks only when you fell asleep.
 - **Rhythm chart and advice.** Sleep onset and wake lines with the target, an estimated melatonin onset (≈ usual sleep onset − 2 h) and core-temperature minimum (≈ melatonin + 7 h), and advice on morning light, a dim evening and whether to step earlier or hold.
+- **Alarm in wireless headphones.** Optional all-night inaudible keep-alive signal (30 Hz at −45 dBFS) so headsets like the Razer Barracuda don't power off before the alarm: set `"keepalive": true` and `"speaker"` in `settings.json`.
 - **Bluetooth speaker routing** with a volume guard, plus an optional night recording (not a diagnosis) and Yandex smart-home sunrise.
 
 ## What it is built on

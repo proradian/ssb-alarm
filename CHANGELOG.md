@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Headphone keep-alive (`"keepalive": true`, `--keepalive`): from the bedtime reminder until 20 minutes after wake-up, an inaudible 30 Hz tone at `keepalive_db` (−45 dBFS by default) plays to the `speaker` device so wireless headsets such as the Razer Barracuda don't power off before the alarm. The device is found again if it goes away or comes back with a different number.
+
 ## 1.0.0 — first public release
 
 - One main window in a pixel style: alarm in the sidebar (−/+, on/off, "bed not before"), pages Today, Sleep rhythm (7/14/30 days) and Nights; alarm settings in a separate window.
